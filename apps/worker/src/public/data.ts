@@ -339,40 +339,40 @@ export async function listHeartbeatsByMonitorId(
 ): Promise<Map<number, PublicStatusResponse['monitors'][number]['heartbeats']>> {
   const byMonitor = new Map<number, PublicStatusResponse['monitors'][number]['heartbeats']>();
 
-  const ids = [...new Set(monitorIds)].filter((id) => Number.isFinite(id));
+  const ids = [...new Set(monitorIds)].filter((id) => Number.isInteger(id) && id > 0);
   if (ids.length === 0) return byMonitor;
 
-  const placeholders = ids.map((_, idx) => `?${idx + 2}`).join(', ');
-  const sql = `
-    SELECT monitor_id, checked_at, status, latency_ms
-    FROM (
-      SELECT
-        id,
-        monitor_id,
-        checked_at,
-        status,
-        latency_ms,
-        ROW_NUMBER() OVER (
-          PARTITION BY monitor_id
-          ORDER BY checked_at DESC, id DESC
-        ) AS rn
-      FROM check_results
-      WHERE monitor_id IN (${placeholders})
-    )
-    WHERE rn <= ?1
-    ORDER BY monitor_id, checked_at DESC, id DESC
-  `;
+  const limit = Math.max(0, Math.floor(limitPerMonitor));
+  if (limit === 0) {
+    for (const id of ids) byMonitor.set(id, []);
+    return byMonitor;
+  }
 
-  const { results } = await db
-    .prepare(sql)
-    .bind(limitPerMonitor, ...ids)
-    .all<HeartbeatRow>();
-  for (const r of results ?? []) {
-    appendMapValue(byMonitor, r.monitor_id, {
-      checked_at: r.checked_at,
-      status: toCheckStatus(r.status),
-      latency_ms: r.latency_ms,
-    });
+  // Per-monitor equality + index-ordered LIMIT, shipped as one db.batch() round
+  // trip (same pattern as the homepage heartbeat query). The previous single
+  // ROW_NUMBER() OVER (PARTITION BY monitor_id ...) query could not terminate
+  // per partition: SQLite had to read and number EVERY historical row for each
+  // monitor before filtering rn <= limit, which caused multi-million-row D1
+  // reads when the runtime snapshot rebuild fell back to this path. Each
+  // statement below scans idx_check_results_monitor_time (monitor_id,
+  // checked_at + implicit rowid tail) backwards and stops after `limit` rows.
+  const statement = db.prepare(`
+    SELECT monitor_id, checked_at, status, latency_ms
+    FROM check_results
+    WHERE monitor_id = ?1
+    ORDER BY checked_at DESC, id DESC
+    LIMIT ?2
+  `);
+
+  const results = await db.batch<HeartbeatRow>(ids.map((id) => statement.bind(id, limit)));
+  for (const result of results ?? []) {
+    for (const r of result.results ?? []) {
+      appendMapValue(byMonitor, r.monitor_id, {
+        checked_at: r.checked_at,
+        status: toCheckStatus(r.status),
+        latency_ms: r.latency_ms,
+      });
+    }
   }
 
   return byMonitor;
@@ -754,15 +754,13 @@ async function computeTodayPartialUptimeBatchSql(
       args.push(monitor.id, monitor.interval_sec, monitor.created_at, monitor.last_checked_at);
     }
 
-    const { results } = await stmt
-      .bind(...args)
-      .all<{
-        monitor_id: number;
-        start_at: number;
-        total_sec: number;
-        downtime_sec: number;
-        unknown_sec: number;
-      }>();
+    const { results } = await stmt.bind(...args).all<{
+      monitor_id: number;
+      start_at: number;
+      total_sec: number;
+      downtime_sec: number;
+      unknown_sec: number;
+    }>();
 
     const rows = results ?? [];
     const shouldReturnAtLeastOneRow = chunk.some(
@@ -1315,9 +1313,8 @@ export async function listVisibleMaintenanceWindows(
   upcoming: FilteredMaintenanceWindowEntry[];
   activeMonitorIds: ReadonlySet<number>;
 }> {
-  const maintenanceVisibilitySql = maintenanceWindowStatusPageVisibilityPredicate(
-    includeHiddenMonitors,
-  );
+  const maintenanceVisibilitySql =
+    maintenanceWindowStatusPageVisibilityPredicate(includeHiddenMonitors);
 
   const [{ results: activeResults }, { results: upcomingResults }] = await Promise.all([
     db
@@ -1366,7 +1363,10 @@ export async function listVisibleMaintenanceWindows(
     ? new Set<number>()
     : await listStatusPageVisibleMonitorIds(
         db,
-        [...activeWindowMonitorIdsByWindowId.values(), ...upcomingWindowMonitorIdsByWindowId.values()].flat(),
+        [
+          ...activeWindowMonitorIdsByWindowId.values(),
+          ...upcomingWindowMonitorIdsByWindowId.values(),
+        ].flat(),
       );
 
   const active = activeRows
@@ -1448,10 +1448,7 @@ export async function listVisibleMaintenanceWindows(
   return { active, upcoming, activeMonitorIds };
 }
 
-export async function readPublicSiteSettings(
-  db: D1Database,
-  opts?: { bypassCache?: boolean },
-) {
+export async function readPublicSiteSettings(db: D1Database, opts?: { bypassCache?: boolean }) {
   return readSettings(db, opts);
 }
 
