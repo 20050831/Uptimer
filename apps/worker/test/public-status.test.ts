@@ -3,6 +3,31 @@ import { describe, expect, it } from 'vitest';
 import { computePublicStatusPayload } from '../src/public/status';
 import { createFakeD1Database, type FakeD1QueryHandler } from './helpers/fake-d1';
 
+type HeartbeatFixtureRow = {
+  monitor_id: number;
+  checked_at: number;
+  status: string;
+  latency_ms: number | null;
+};
+
+// Matches the per-monitor heartbeat query issued by listHeartbeatsByMonitorId()
+// via db.batch(): each bound statement receives [monitor_id, limit] and must
+// return that monitor's rows newest-first, truncated to the limit.
+function heartbeatRowsHandler(rows: HeartbeatFixtureRow[]): FakeD1QueryHandler {
+  return {
+    match: 'from check_results where monitor_id = ?1 order by checked_at desc, id desc limit ?2',
+    all: (args) => {
+      const monitorId = args[0];
+      const limit = Number(args[1]);
+      const matched = rows
+        .filter((row) => row.monitor_id === monitorId)
+        .sort((a, b) => b.checked_at - a.checked_at);
+      if (!Number.isFinite(limit) || limit <= 0) return matched;
+      return matched.slice(0, limit);
+    },
+  };
+}
+
 describe('public/status payload regression', () => {
   it('keeps monitor heartbeats and uptime data stable when parallel reads are used', async () => {
     const now = 1_728_000_000;
@@ -42,6 +67,10 @@ describe('public/status payload regression', () => {
           { monitor_id: 11, checked_at: now - 120, status: 'down', latency_ms: null },
         ],
       },
+      heartbeatRowsHandler([
+        { monitor_id: 11, checked_at: now - 60, status: 'up', latency_ms: 80 },
+        { monitor_id: 11, checked_at: now - 120, status: 'down', latency_ms: null },
+      ]),
       {
         match: 'from monitor_daily_rollups',
         all: () => [
@@ -255,6 +284,10 @@ describe('public/status payload regression', () => {
           { monitor_id: 12, checked_at: now - 120, status: 'up', latency_ms: 70 },
         ],
       },
+      heartbeatRowsHandler([
+        { monitor_id: 11, checked_at: now - 60, status: 'up', latency_ms: 50 },
+        { monitor_id: 12, checked_at: now - 120, status: 'up', latency_ms: 70 },
+      ]),
       {
         match: 'from monitor_daily_rollups',
         all: () => [],
@@ -336,6 +369,9 @@ describe('public/status payload regression', () => {
         match: 'row_number() over',
         all: () => [{ monitor_id: 12, checked_at: now - 120, status: 'up', latency_ms: 70 }],
       },
+      heartbeatRowsHandler([
+        { monitor_id: 12, checked_at: now - 120, status: 'up', latency_ms: 70 },
+      ]),
       {
         match: 'from monitor_daily_rollups',
         all: () => [],
@@ -433,6 +469,9 @@ describe('public/status payload regression', () => {
         match: 'row_number() over',
         all: () => [{ monitor_id: 11, checked_at: now - 60, status: 'up', latency_ms: 50 }],
       },
+      heartbeatRowsHandler([
+        { monitor_id: 11, checked_at: now - 60, status: 'up', latency_ms: 50 },
+      ]),
       {
         match: 'from monitor_daily_rollups',
         all: () => [],
@@ -513,6 +552,9 @@ describe('public/status payload regression', () => {
         match: 'row_number() over',
         all: () => [{ monitor_id: 12, checked_at: now - 60, status: 'up', latency_ms: 50 }],
       },
+      heartbeatRowsHandler([
+        { monitor_id: 12, checked_at: now - 60, status: 'up', latency_ms: 50 },
+      ]),
       {
         match: 'from monitor_daily_rollups',
         all: () => [],
@@ -614,6 +656,10 @@ describe('public/status payload regression', () => {
           { monitor_id: 12, checked_at: roundedPreCreationCheckAt, status: 'up', latency_ms: 70 },
         ],
       },
+      heartbeatRowsHandler([
+        { monitor_id: 11, checked_at: now - 60, status: 'up', latency_ms: 50 },
+        { monitor_id: 12, checked_at: roundedPreCreationCheckAt, status: 'up', latency_ms: 70 },
+      ]),
       {
         match: 'from monitor_daily_rollups',
         all: () => [],
@@ -713,6 +759,12 @@ describe('public/status payload regression', () => {
           { monitor_id: 12, checked_at: newMonitorCreatedAt + 90, status: 'up', latency_ms: 70 },
         ],
       },
+      heartbeatRowsHandler([
+        { monitor_id: 11, checked_at: now - 60, status: 'up', latency_ms: 50 },
+        { monitor_id: 12, checked_at: newMonitorCreatedAt + 270, status: 'up', latency_ms: 70 },
+        { monitor_id: 12, checked_at: newMonitorCreatedAt + 150, status: 'up', latency_ms: 70 },
+        { monitor_id: 12, checked_at: newMonitorCreatedAt + 90, status: 'up', latency_ms: 70 },
+      ]),
       {
         match: 'from monitor_daily_rollups',
         all: () => [],
@@ -834,6 +886,7 @@ it('filters hidden monitors and hidden-only scoped events from anonymous status 
       match: 'row_number() over',
       all: () => [],
     },
+    heartbeatRowsHandler([]),
     {
       match: 'from monitor_daily_rollups',
       all: () => [],
@@ -997,6 +1050,7 @@ it('bounds anonymous incident and maintenance status queries before expanding re
       match: 'row_number() over',
       all: () => [],
     },
+    heartbeatRowsHandler([]),
     {
       match: 'from monitor_daily_rollups',
       all: () => [],
