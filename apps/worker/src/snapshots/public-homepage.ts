@@ -392,7 +392,12 @@ export function parseHomepageArtifactMonitorFragmentRows(
       invalidCount += 1;
       continue;
     }
-    if (row.generated_at !== snapshot.generated_at) {
+    // Content guard on writes (UPSERT_FRAGMENT_SQL) skips same-content updates,
+    // so a stored fragment may legitimately trail the envelope generation while
+    // still holding the latest body for that monitor. Only fragments that are
+    // NEWER than the envelope are treated as stale; the body itself stays
+    // authoritative because writes never regress content.
+    if (row.generated_at > snapshot.generated_at) {
       staleCount += 1;
       continue;
     }

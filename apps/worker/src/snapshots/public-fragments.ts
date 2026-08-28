@@ -1,4 +1,4 @@
-const UPSERT_FRAGMENT_SQL = `
+export const UPSERT_FRAGMENT_SQL = `
   INSERT INTO public_snapshot_fragments (
     snapshot_key,
     fragment_key,
@@ -12,6 +12,7 @@ const UPSERT_FRAGMENT_SQL = `
     body_json = excluded.body_json,
     updated_at = excluded.updated_at
   WHERE excluded.generated_at >= public_snapshot_fragments.generated_at
+    AND excluded.body_json IS NOT public_snapshot_fragments.body_json
 `;
 
 const READ_FRAGMENTS_SQL = `
