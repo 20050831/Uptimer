@@ -111,6 +111,15 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   };
 };
 
+// CI pins Node 22.14, whose node:sqlite positional binding rejects numbered
+// "?N" placeholders with "column index out of range". Every parameter in the
+// statements below appears exactly once and in order, so stripping the
+// numbers to anonymous "?" keeps identical positional-binding semantics on
+// every Node version. D1 itself still receives the original numbered SQL.
+function toAnonymousParameterSql(sql: string): string {
+  return sql.replace(/\?(\d+)/g, '?');
+}
+
 describe('snapshots/public-fragments content guard (real SQLite)', () => {
   let db: InstanceType<typeof DatabaseSync>;
 
@@ -140,7 +149,7 @@ describe('snapshots/public-fragments content guard (real SQLite)', () => {
     updatedAt: number,
   ): number {
     const result = db
-      .prepare(UPSERT_FRAGMENT_SQL)
+      .prepare(toAnonymousParameterSql(UPSERT_FRAGMENT_SQL))
       .run(snapshotKey, fragmentKey, generatedAt, bodyJson, updatedAt);
     return Number(result.changes);
   }
@@ -149,7 +158,9 @@ describe('snapshots/public-fragments content guard (real SQLite)', () => {
     return (
       (db
         .prepare(
-          'SELECT fragment_key, generated_at, body_json, updated_at FROM public_snapshot_fragments WHERE snapshot_key = ? AND fragment_key = ?',
+          toAnonymousParameterSql(
+            'SELECT fragment_key, generated_at, body_json, updated_at FROM public_snapshot_fragments WHERE snapshot_key = ?1 AND fragment_key = ?2',
+          ),
         )
         .get(snapshotKey, fragmentKey) as PublicSnapshotFragmentRow | undefined) ?? null
     );
