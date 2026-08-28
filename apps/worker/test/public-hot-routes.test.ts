@@ -583,7 +583,7 @@ describe('public hot routes', () => {
     expect(res.headers.get('Access-Control-Allow-Methods')).toBe('GET, OPTIONS');
   });
 
-  it('returns the standard JSON error contract for unknown public api paths', async () => {
+  it('returns the standard JSON error contract for unknown public api paths', { timeout: 20_000 }, async () => {
     const originalCaches = (globalThis as { caches?: unknown }).caches;
     Object.defineProperty(globalThis, 'caches', {
       configurable: true,

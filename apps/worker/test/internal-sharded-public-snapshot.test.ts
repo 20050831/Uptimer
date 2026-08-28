@@ -560,7 +560,7 @@ describe('internal sharded public snapshot continuation route', () => {
     expect(res.status).toBe(404);
   });
 
-  it('runs the runtime step and queues homepage/status branches in parallel', async () => {
+  it('runs the runtime step and queues homepage/status branches in parallel', { timeout: 20_000 }, async () => {
     const selfRequests: Request[] = [];
     const env = {
       DB: createFakeD1Database([

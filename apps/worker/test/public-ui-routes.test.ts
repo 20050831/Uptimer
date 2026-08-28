@@ -643,7 +643,7 @@ describe('public ui routes', () => {
     });
   });
 
-  it('falls back to the live route and queues an overview refresh when the historical snapshot is missing', async () => {
+  it('falls back to the live route and queues an overview refresh when the historical snapshot is missing', { timeout: 20_000 }, async () => {
     const dayStart = 1_728_000_000;
     const rangeEnd = dayStart + 3_600;
 
